@@ -22,7 +22,7 @@
     <Company>FEZModding</Company>
     <Description>Conversion pipeline for FEZ game assets.</Description>
     <RepositoryUrl>https://github.com/FEZModding/FEZRepacker</RepositoryUrl>
-
+    <PlatformTarget>x86</PlatformTarget>
   </PropertyGroup>
 
   <ItemGroup>
@@ -34,6 +34,12 @@
     <PackageReference Include="SharpGLTF.Toolkit" Version="1.0.4" />
     <PackageReference Include="System.Text.Json" Version="9.0.4" />
     <PackageReference Include="SixLabors.ImageSharp" Version="2.1.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="XMemCompress\xcompress.dll" Link="xcompress.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

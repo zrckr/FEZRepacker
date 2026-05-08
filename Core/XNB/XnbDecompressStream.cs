@@ -1,6 +1,6 @@
 using System.Text;
 
-using Microsoft.Xna.Framework.Content;
+using FEZRepacker.Core.XMemCompress;
 
 namespace FEZRepacker.Core.XNB
 {
@@ -9,12 +9,8 @@ namespace FEZRepacker.Core.XNB
         private readonly Stream _source;
         private readonly bool _copyOriginalSource;
         private readonly MemoryStream _decompressionBuffer;
-        private readonly LzxDecoder? _decoder;
-        private readonly long _sourceEndPosition;
         private readonly int _decompressedSize;
         private long _readPosition;
-        private long _sourcePosition;
-        private bool _finished;
 
         public override bool CanRead => true;
         public override bool CanSeek => false;
@@ -36,11 +32,21 @@ namespace FEZRepacker.Core.XNB
                 _copyOriginalSource = true;
                 return;
             }
-            
-            _decoder = new LzxDecoder(16);
-            _sourcePosition = source.Position;
-            _sourceEndPosition = _sourcePosition + compressedSize;
+
             _decompressedSize = decompressedSize;
+            var compressedData = new byte[compressedSize];
+            source.Read(compressedData, 0, compressedSize);
+            var contentSize = decompressedSize - XnbHeader.Size;
+            var decompressed = XCompress.Decompress(compressedData, contentSize);
+
+            _decompressionBuffer.Write(decompressed, 0, decompressed.Length);
+
+            if (_decompressionBuffer.Length != decompressedSize)
+            {
+                throw new XnbSerializationException(
+                    $"XNB decompression data size mismatch - expected {decompressedSize}, got {_decompressionBuffer.Length}"
+                );
+            }
         }
 
         private bool TryProcessHeader(out int compressedSize, out int decompressedSize)
@@ -53,11 +59,11 @@ namespace FEZRepacker.Core.XNB
                 _source.Position = sourcePositionPreHeaderRead;
                 return false;
             }
-            
+
             using var reader = new BinaryReader(_source, Encoding.UTF8, true);
             compressedSize = reader.ReadInt32();
             decompressedSize = reader.ReadInt32() + XnbHeader.Size;
-            
+
             header.Flags &= ~XnbHeader.XnbFlags.Compressed;
             header.Write(_decompressionBuffer);
             new BinaryWriter(_decompressionBuffer).Write(decompressedSize);
@@ -72,72 +78,10 @@ namespace FEZRepacker.Core.XNB
                 return _source.Read(buffer, offset, count);
             }
 
-            int bytesRead = 0;
-
-            while (_decompressionBuffer.Length - _readPosition < count && !_finished)
-            {
-                DecompressNextBlock();
-            }
-
-            int decompressedBytesToReadCount = (int)Math.Min(count, _decompressionBuffer.Length - _readPosition);
-            if (decompressedBytesToReadCount > 0)
-            {
-                _decompressionBuffer.Position = _readPosition;
-                int read = _decompressionBuffer.Read(buffer, offset, decompressedBytesToReadCount);
-                _readPosition += read;
-                bytesRead += read;
-            }
-
-            return bytesRead;
-        }
-
-        private void DecompressNextBlock()
-        {
-            if (_sourcePosition >= _sourceEndPosition)
-            {
-                MarkFinished();
-                return;
-            }
-
-            _source.Position = _sourcePosition;
-
-            // all of these shorts are big-endian
-            int flag = _source.ReadByte();
-            int frameSize, blockSize;
-            if (flag == 0xFF)
-            {
-                frameSize = (_source.ReadByte() << 8) | _source.ReadByte();
-                blockSize = (_source.ReadByte() << 8) | _source.ReadByte();
-                _sourcePosition += 5;
-            }
-            else
-            {
-                frameSize = 0x8000;
-                blockSize = (flag << 8) | _source.ReadByte();
-                _sourcePosition += 2;
-            }
-
-            if (blockSize == 0 || frameSize == 0)
-            {
-                MarkFinished();
-                return;
-            }
-
-            _decompressionBuffer.Position = _decompressionBuffer.Length;
-            _decoder!.Decompress(_source, blockSize, _decompressionBuffer, frameSize);
-            _sourcePosition += blockSize;
-        }
-
-        private void MarkFinished()
-        {
-            _finished = true;
-            var finalSize = _decompressionBuffer.Length;
-            if (finalSize != _decompressedSize)
-            {
-                throw new XnbSerializationException(
-                    $"XNB decompression data size mismatch - expected {_decompressedSize}, got {finalSize}"
-                );
-            }
+            _decompressionBuffer.Position = _readPosition;
+            int read = _decompressionBuffer.Read(buffer, offset, count);
+            _readPosition += read;
+            return read;
         }
 
         protected override void Dispose(bool disposing)
@@ -146,10 +90,10 @@ namespace FEZRepacker.Core.XNB
             {
                 _decompressionBuffer.Dispose();
             }
-            
+
             base.Dispose(disposing);
         }
-        
+
         public override void Flush() { }
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();

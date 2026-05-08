@@ -18,7 +18,7 @@
 
         public static Stream Compress(Stream xnbStream)
         {
-            throw new NotImplementedException();
+            return new XnbCompressStream(xnbStream);
         }
     }
 }
