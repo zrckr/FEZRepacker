@@ -1,6 +1,6 @@
 ﻿using System.Text;
 
-using XnbCompress;
+using XCompress;
 
 namespace FEZRepacker.Core.XNB
 {
@@ -40,6 +40,19 @@ namespace FEZRepacker.Core.XNB
             }
 
             var payloadLength = fileLength - XnbHeader.Size;
+            if (fileLength < XnbHeader.Size || payloadLength > source.Length - source.Position)
+            {
+                throw new XnbSerializationException("Invalid uncompressed XNB length");
+            }
+
+            using var reader = new BinaryReader(source, Encoding.UTF8, true);
+            var payload = reader.ReadBytes(payloadLength);
+            source.Position = sourcePosition;
+            if (payload.Length != payloadLength)
+            {
+                throw new XnbSerializationException("Incomplete uncompressed XNB payload");
+            }
+
             header.Flags |= XnbHeader.XnbFlags.Compressed;
             header.Write(_compressionBuffer);
 
@@ -47,16 +60,14 @@ namespace FEZRepacker.Core.XNB
             writer.Write(0); // Total file length will be filled in after compression
             writer.Write(payloadLength);
 
-            const int outLen = int.MaxValue - XnbHeader.Size - sizeof(int);
-            var compressor = new XMemCompressor(windowExponent: 16, partitionSize: 0x80000);
-            compressor.Compress(source, payloadLength, _compressionBuffer, outLen);
+            var compressor = new Compressor(windowSize: 1 << 16, partitionSize: 0x80000);
+            compressor.Compress(payload, payload.Length, _compressionBuffer);
 
             // Include both size fields and all LZX framing in the container length
             var compressedLength = checked((int)_compressionBuffer.Length);
             _compressionBuffer.Position = XnbHeader.Size - sizeof(int);
             writer.Write(compressedLength);
             _compressionBuffer.Position = 0;
-            source.Position = sourcePosition;
         }
 
         private bool TryProcessHeader(out XnbHeader header, out int fileLength)

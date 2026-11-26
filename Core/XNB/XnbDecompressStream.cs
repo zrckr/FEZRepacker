@@ -1,6 +1,6 @@
 using System.Text;
 
-using XnbCompress;
+using XCompress;
 
 namespace FEZRepacker.Core.XNB
 {
@@ -14,7 +14,6 @@ namespace FEZRepacker.Core.XNB
         private readonly Stream _source;
         private readonly bool _copyOriginalSource;
         private readonly MemoryStream _decompressionBuffer;
-        private readonly XMemDecompressor? _decoder;
         private readonly int _compressedSize;
         private readonly int _decompressedSize;
         private long _readPosition;
@@ -42,7 +41,6 @@ namespace FEZRepacker.Core.XNB
                 return;
             }
             
-            _decoder = new XMemDecompressor(16);
             _sourcePosition = source.Position;
             _compressedSize = compressedSize;
             _decompressedSize = decompressedSize;
@@ -62,12 +60,13 @@ namespace FEZRepacker.Core.XNB
             using var reader = new BinaryReader(_source, Encoding.UTF8, true);
             var fileSize = reader.ReadInt32();
             var payloadSize = reader.ReadInt32();
-            compressedSize = fileSize - XnbHeader.Size - sizeof(int);
-            if (compressedSize < 0 || payloadSize < 0 || payloadSize > int.MaxValue - XnbHeader.Size)
+            var headerSize = XnbHeader.Size + sizeof(int);
+            if (fileSize < headerSize || payloadSize < 0 || payloadSize > int.MaxValue - XnbHeader.Size)
             {
                 throw new XnbSerializationException("Invalid compressed XNB lengths.");
             }
 
+            compressedSize = fileSize - headerSize;
             decompressedSize = payloadSize + XnbHeader.Size;
             header.Flags &= ~XnbHeader.XnbFlags.Compressed;
             header.Write(_decompressionBuffer);
@@ -85,7 +84,7 @@ namespace FEZRepacker.Core.XNB
             }
 
             int bytesRead = 0;
-            if (_decompressionBuffer.Length - _readPosition < count && !_finished)
+            if (!_finished && XnbHeader.Size - _readPosition < count)
             {
                 DecompressPayload();
             }
@@ -105,29 +104,42 @@ namespace FEZRepacker.Core.XNB
         private void DecompressPayload()
         {
             _source.Position = _sourcePosition;
-            _decompressionBuffer.Position = _decompressionBuffer.Length;
-
-            var status = _decoder!.Decompress(_source, _compressedSize,
-                _decompressionBuffer, _decompressedSize - XnbHeader.Size);
-
-            if (status != 0)
+            if (_compressedSize > _source.Length - _sourcePosition)
             {
-                throw new XnbSerializationException($"XNB decompression failed with status {status}.");
+                throw new XnbSerializationException("Incomplete compressed XNB payload");
             }
 
-            MarkFinished();
-        }
+            using var reader = new BinaryReader(_source, Encoding.UTF8, true);
+            var payload = reader.ReadBytes(_compressedSize);
+            if (payload.Length != _compressedSize)
+            {
+                throw new XnbSerializationException("Incomplete compressed XNB payload");
+            }
 
-        private void MarkFinished()
-        {
-            _finished = true;
-            var finalSize = _decompressionBuffer.Length;
-            if (finalSize != _decompressedSize)
+            using var compressedPayload = new MemoryStream(payload, writable: false);
+            var decoder = new Decompressor(compressedPayload, windowSize: 1 << 16);
+            var buffer = new byte[0x8000];
+            _decompressionBuffer.SetLength(XnbHeader.Size);
+            _decompressionBuffer.Position = XnbHeader.Size;
+
+            int read;
+            while ((read = decoder.Read(buffer, 0, buffer.Length)) != 0)
+            {
+                if (read > _decompressedSize - _decompressionBuffer.Length)
+                {
+                    throw new XnbSerializationException("XNB decompression exceeded the declared payload size");
+                }
+
+                _decompressionBuffer.Write(buffer, 0, read);
+            }
+
+            if (_decompressionBuffer.Length != _decompressedSize)
             {
                 throw new XnbSerializationException(
-                    $"XNB decompression data size mismatch - expected {_decompressedSize}, got {finalSize}"
-                );
+                    $"XNB decompression data size mismatch - expected {_decompressedSize}, got {_decompressionBuffer.Length}");
             }
+
+            _finished = true;
         }
 
         protected override void Dispose(bool disposing)
